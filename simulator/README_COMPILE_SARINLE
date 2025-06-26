@@ -1,0 +1,35 @@
+SDT Compilation Instructions on Gadi
+
+Follow these steps to set up your environment and compile the SDT system on Gadi.
+
+1. Set Environment Variables
+
+Open a terminal and run:
+
+export SLEPC_DIR=/g/data/ad73/sy1090/AngusTB/libraries/slepc-install
+export PETSC_DIR=/g/data/ad73/sy1090/AngusTB/libraries/petsc-3.18.4
+export PETSC_ARCH=arch-linux-c-debug
+export TRILINOS_DIR=/g/data/ad73/sy1090/AngusTB/libraries/trilinos-install
+
+2. Load Required Modules
+
+Load the necessary modules with:
+
+module load pbs openmpi/4.0.2 intel-compiler/2020.0.166 intel-mkl/2020.0.166 cmake gsl eigen/3.3.7
+
+
+3. (CONFIGURATION ALREADY DONE, ONLY USE IF YOU KNOW WHAT YOU ARE DOING!) Configure the Build 
+
+In the project root (where CMakeLists.txt is located), run:
+
+cmake . -Dconfig_slepc=$SLEPC_DIR
+
+4. Build the System
+
+Compile the project with:
+
+make -j16
+
+(Adjust the -j16 value according to the number of cores available.)
+
+

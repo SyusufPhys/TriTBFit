@@ -1,0 +1,40 @@
+<materials>
+	<material name="Silicon">
+		<!-- Lattice constant and reference -->
+		<a val="5.430" />
+		<E_100 val="5.1016" />
+		<!-- Reference not given -->
+		<!-- Onsite energies -->
+		<E_s_a val="-2.0196" />
+		<E_s_c val="-2.0196" />
+		<E_p_a val="4.5448" />
+		<E_p_c val="4.5448" />
+		<E_d val="14.1836" />
+		<E_sstar val="19.6748" />
+		<!-- Two-center integrals -->
+		<ss_sigma val="-1.9413" />
+		<sstar_sstar_sigma val="-3.3081" />
+		<sa_star_sc_sigma val="-1.6933" />
+		<sa_sc_star_sigma val="-1.6933" />
+		<sa_pc_sigma val="2.7836" />
+		<sc_pa_sigma val="2.7836" />
+		<sa_star_pc_sigma val="2.8428" />
+		<sc_star_pa_sigma val="2.8428" />
+		<sa_dc_sigma val="-2.7998" />
+		<sc_da_sigma val="-2.7998" />
+		<sa_star_dc_sigma val="-0.7003" />
+		<sc_star_da_sigma val="-0.7003" />
+		<pp_sigma val="4.1068" />
+		<pp_pi val="-1.5934" />
+		<pa_dc_sigma val="-2.1073" />
+		<pc_da_sigma val="-2.1073" />
+		<pa_dc_pi val="1.9977" />
+		<pc_da_pi val="1.9977" />
+		<dd_sigma val="-1.2327" />
+		<dd_pi val="2.5145" />
+		<dd_delta val="-2.4734" />
+		<!-- Spin-orbit parameters -->
+		<Delta_a_over_3 val="0.0195" />
+		<Delta_c_over_3 val="0.0195" />
+	</material>
+</materials>

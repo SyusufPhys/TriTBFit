@@ -1,0 +1,67 @@
+<user_inputs>
+  <!-- Domain and cell specifications -->
+  <domain>
+    <dom_x>1</dom_x>
+    <dom_y>1</dom_y>
+    <dom_z>1</dom_z>
+  </domain>
+  <cell_name>zincblende</cell_name>
+
+  <!-- Field parameters -->
+  <fields>
+    <mag_field>0.0, 0.0, 0.0</mag_field>
+    <elec_field>0.0, 0.0, 0.0</elec_field>
+  </fields>
+
+  <!-- Material and k-space settings -->
+  <material>Silicon</material>
+  <kvec></kvec>
+  <material_db_path>/g/data/ad73/sy1090/AngusTB/material_database/Jancu_Materials.xml</material_db_path>
+
+
+  <!-- Various flags -->
+  <flags>
+    <print_cells>0</print_cells>
+    <print_materials>0</print_materials>
+    <dump_ham>0</dump_ham>
+    <dump_prob>0</dump_prob>
+    <dump_pdb>0</dump_pdb>
+    <dump_csv>1</dump_csv>
+  </flags>
+
+  <!-- Plotting and passivation settings -->
+  <plot_steps>10000</plot_steps>
+  <passivation>
+    <pass_x>0</pass_x>
+    <pass_y>0</pass_y>
+    <pass_z>0</pass_z>
+  </passivation>
+
+  <!-- High-symmetry point definitions -->
+  <high_symmetry>
+    <!-- Fractional coordinates for high-symmetry points -->
+    <L_frac>0.5, 0.5, 0.5</L_frac>
+    <G_frac>0.0, 0.0, 0.0</G_frac>
+    <X_frac>1.0, 0.0, 0.0</X_frac>
+    <W_frac>1.0, 0.5, 0.0</W_frac>
+    <K_frac>0.75, 0.75, 0.0</K_frac>
+    <U_frac>1.0, 0.25, 0.25</U_frac>
+    
+    <!-- Base number of interpolation steps for the k-path -->
+    <base_steps>1000</base_steps>
+    
+    <!-- Define the desired k-path with corresponding high-symmetry labels -->
+    <path>
+      <point label="L">L</point>
+      <point label="Γ">Γ</point>
+      <point label="X">X</point>
+      <point label="W">W</point>
+      <point label="K">K</point>
+      <point label="L">L</point>
+      <point label="W">W</point>
+      <point label="X">X</point>
+      <point label="K">K</point>
+      <point label="Γ">Γ</point>
+    </path>
+  </high_symmetry>
+</user_inputs>
