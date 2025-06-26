@@ -1,0 +1,665 @@
+extract sim handler from this:
+
+my code:
+
+# src/data_loader.py
+
+from pathlib import Path
+from typing import List, Tuple
+
+import numpy as np
+import pandas as pd
+
+
+class BandStructureData:
+    """
+    Load reference CSV and expose k-points & energy matrix.
+
+    CSV layout (no header):
+        col 0  : high-symmetry label (string) or "none"
+        col 1  : cumulative k-path distance (float)
+        col 2-4: raw kx, ky, kz (ignored here)
+        col 5… : eigen-energies (float)
+    """
+
+    def __init__(self, csv_path: Path) -> None:
+        if not csv_path.is_file():
+            raise FileNotFoundError(csv_path)
+        self.raw_df = pd.read_csv(csv_path, header=None)
+
+        # Extract basic arrays ----------------------------------------------------
+        # Use Python list for labels
+        self.labels: List[str] = self.raw_df.iloc[:, 0].tolist()
+        self.kpath: np.ndarray = self.raw_df.iloc[:, 1].to_numpy(float)
+        self.energies: np.ndarray = self.raw_df.iloc[:, 5:].to_numpy(float)  # shape (N_k, N_bands)
+
+    def high_symmetry_points(self) -> Tuple[np.ndarray, List[str]]:
+        """
+        Return x-positions & labels of high-symmetry points for plotting.
+        """
+        mask = self.raw_df.iloc[:, 0] != "none"
+        x_positions = self.kpath[mask.values]
+        labels = self.raw_df.loc[mask, 0].tolist()
+        return x_positions, labels
+
+"""CMA‑ES wrapper for Pass‑1 fitting (Python 3.9‑compatible)."""
+
+from typing import Callable, Optional
+
+import numpy as np
+import cma
+
+from src.data_loader import BandStructureData
+from src.user import UserConfig
+
+
+class BandStructureFitter:
+    """Treat TB solver as a black‑box and fit via CMA‑ES.
+
+    Parameters
+    ----------
+    data        : reference band‑structure (k‑path & energies)
+    tb_solver   : callable ``(params, k_grid) -> energies``
+    init_params : initial parameter vector; if ``None`` → random normal
+    cfg         : CLI‑derived optimiser hyper‑parameters
+    """
+
+    def __init__(
+        self,
+        data: BandStructureData,
+        tb_solver: Callable[[np.ndarray, np.ndarray], np.ndarray],
+        init_params: Optional[np.ndarray],
+        cfg: UserConfig,
+    ) -> None:
+        self.data = data
+        self.tb_solver = tb_solver
+        self.cfg = cfg
+        self.dim = init_params.size if init_params is not None else 20  # default size
+
+        # ── CMA‑ES initialisation ───────────────────────────────────────────
+        x0 = init_params if init_params is not None else np.random.randn(self.dim)
+        sigma0 = 0.3 * np.linalg.norm(x0) / np.sqrt(self.dim)
+        self.es = cma.CMAEvolutionStrategy(
+            x0,
+            sigma0,
+            {
+                "popsize": cfg.popsize,
+                "seed": cfg.seed,
+                "maxiter": cfg.max_iter,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    def _loss(self, params: np.ndarray) -> float:
+        """Root‑mean‑square energy mismatch over all k‑points & bands."""
+        pred = self.tb_solver(params, self.data.kpath)  # type: ignore[arg-type]
+        if pred.shape != self.data.energies.shape:
+            raise ValueError("TB solver returned array of wrong shape")
+        return float(np.sqrt(((pred - self.data.energies) ** 2).mean()))
+
+    # ------------------------------------------------------------------
+    def fit(self) -> np.ndarray:
+        """Run CMA‑ES until termination; return best parameter vector."""
+        while not self.es.stop():
+            population = self.es.ask()
+            losses = [self._loss(p) for p in population]
+            self.es.tell(population, losses)
+            self.es.disp()
+        best = self.es.result.xbest
+
+        # Save best parameters
+        out_path = self.cfg.out_dir / "best_params_pass1.npy"
+        np.save(out_path, best)
+        print(f"[INFO] Saved best parameters to {out_path}")
+        return best
+
+
+"""
+ParamHandler – Python 3.9-compatible.
+
+Reads a Jancu-style <materials> XML, lets you tweak tags, and writes a new file.
+"""
+
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Union
+
+
+class ParamHandler:
+    """Lightweight wrapper around the Jancu material database.
+
+    Convenience method:
+        • update_and_save(material, updates, out_path, keep_only=True)
+    """
+
+    # ------------------------------------------------------------------
+    def __init__(self, xml_path: Union[str, Path]) -> None:
+        self.path = Path(xml_path)
+        if not self.path.is_file():
+            raise FileNotFoundError(self.path)
+        self.tree = ET.parse(self.path)
+        self.root = self.tree.getroot()  # <materials>
+
+    # ------------------------------------------------------------------
+    def list_materials(self) -> List[str]:
+        return [m.get("name") for m in self.root.findall("./material")]
+
+    def get_params(self, material: str) -> Dict[str, float]:
+        mat = self._material_node(material)
+        return {child.tag: float(child.get("val")) for child in mat}
+
+    # ------------------------------------------------------------------
+    def set_params(self, material: str, updates: Dict[str, float]) -> None:
+        mat = self._material_node(material)
+        for tag, val in updates.items():
+            node = mat.find(tag)
+            if node is None:
+                node = ET.SubElement(mat, tag)
+            node.set("val", f"{val:.6f}")
+
+            # keep _a/_c twins equal for diamond structures
+            if tag.endswith("_a"):
+                twin = tag.replace("_a", "_c")
+            elif tag.endswith("_c"):
+                twin = tag.replace("_c", "_a")
+            else:
+                twin = None
+
+            if twin:
+                twin_node = mat.find(twin)
+                if twin_node is not None:
+                    twin_node.set("val", f"{val:.6f}")
+
+    # ------------------------------------------------------------------
+    def write(
+        self,
+        out_path: Union[str, Path],
+        materials: Optional[Iterable[str]] = None,
+    ) -> None:
+        """Serialize current tree to *out_path*.
+
+        If *materials* is given, keep **only** those material names.
+        """
+        out_path = Path(out_path)
+        if materials is not None:
+            keep = set(materials)
+            for mat in list(self.root.findall("./material")):
+                if mat.get("name") not in keep:
+                    self.root.remove(mat)
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        self.tree.write(out_path, encoding="utf-8", xml_declaration=True)
+        print(f"[ParamHandler] wrote {out_path}")
+
+    # ------------------------------------------------------------------
+    def update_and_save(
+        self,
+        material: str,
+        updates: Dict[str, float],
+        out_path: Union[str, Path],
+        keep_only: bool = True,
+    ) -> None:
+        """Shortcut: update tags, then write to *out_path*."""
+        self.set_params(material, updates)
+        self.write(out_path, materials=[material] if keep_only else None)
+
+    # ------------------------------------------------------------------
+    def _material_node(self, material: str) -> ET.Element:
+        node = self.root.find(f"./material[@name='{material}']")
+        if node is None:
+            raise KeyError(f"material <{material}> not found in {self.path}")
+        return node
+
+
+# ----------------------------------------------------------------------
+# tiny demo (runs only if executed directly)
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    ph = ParamHandler("simulator/Jancu_Materials.xml")
+    print("Materials:", ph.list_materials()[:4], "…")
+    si = ph.get_params("Silicon")
+    print("E_s_a before:", si["E_s_a"])
+
+    ph.update_and_save(
+        material="Silicon",
+        updates={"E_s_a": si["E_s_a"] + 0.10},
+        out_path="sim_data/Si_trial.xml",
+        keep_only=True,
+    )
+
+"""
+SimHandler – Python 3.9-compatible wrapper for launching the compiled
+`sdt tight-binding` executable in a clean scratch directory.
+
+• Builds a run-specific user-input XML (material name + DB path patched in).
+• Exports all required PETSc/SLEPc/Trilinos env-vars.
+• Loads the MPI / Intel / MKL modules (via `bash -lc` so `module` is defined).
+• Runs the solver and returns the path to the generated bandstructure.csv.
+"""
+
+import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Dict, List, Optional, Union
+
+
+class SimHandler:
+    # ------------------------------------------------------------------
+    def __init__(
+        self,
+        solver_exe: Union[str, Path],
+        base_user_xml: Union[str, Path],
+        save_root: Union[str, Path] = "results",
+        env_vars: Optional[Dict[str, str]] = None,
+        modules: Optional[List[str]] = None,
+    ) -> None:
+        self.solver_exe = Path(solver_exe).resolve()
+        self.base_user_xml = Path(base_user_xml).resolve()
+        self.save_root = Path(save_root).resolve()
+
+        # Defaults taken from Sarinle’s guide
+        self.env_vars = env_vars or {
+            "SLEPC_DIR": "/g/data/ad73/sy1090/AngusTB/libraries/slepc-install",
+            "PETSC_DIR": "/g/data/ad73/sy1090/AngusTB/libraries/petsc-3.18.4",
+            "PETSC_ARCH": "arch-linux-c-debug",
+            "TRILINOS_DIR": "/g/data/ad73/sy1090/AngusTB/libraries/trilinos-install",
+        }
+        self.modules = modules or [
+            "pbs",
+            "openmpi/4.0.2",
+            "intel-compiler/2020.0.166",
+            "intel-mkl/2020.0.166",
+            "cmake",
+            "gsl",
+            "eigen/3.3.7",
+        ]
+
+        if not self.solver_exe.is_file():
+            raise FileNotFoundError(self.solver_exe)
+        if not self.base_user_xml.is_file():
+            raise FileNotFoundError(self.base_user_xml)
+
+        self.save_root.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    def run(
+        self,
+        material_name: str,
+        material_db: Union[str, Path],
+        extra_flags: Optional[Dict[str, str]] = None,
+    ) -> Path:
+        """
+        Launch the solver once and return the path to bandstructure.csv.
+
+        Parameters
+        ----------
+        material_name : string placed inside <material> tag
+        material_db   : path to materials XML for this run
+        extra_flags   : optional additional CLI flags {"flag": "value"}
+
+        Returns
+        -------
+        Path to generated bandstructure.csv inside a new scratch folder.
+        """
+        scratch = Path(tempfile.mkdtemp(prefix="tbf_", dir=self.save_root))
+        user_xml = scratch / "user_input.xml"
+        self._write_user_xml(material_name, material_db, user_xml)
+
+        cli = [
+            str(self.solver_exe),
+            "tight-binding",
+            f"--user_input={user_xml}",
+            f"--save_dir={scratch}",
+        ]
+        if extra_flags:
+            cli.extend([f"--{k}={v}" for k, v in extra_flags.items()])
+
+        bash_cmd = self._bash_wrapper(" ".join(cli))
+        print("[SimHandler] launching solver …")
+        #subprocess.run(bash_cmd, shell=True, check=True, executable="/bin/bash")
+        subprocess.run(
+                bash_cmd,
+                shell=True,
+                check=True,
+                executable="/bin/bash",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+        )
+        print("[SimHandler] finished run.")
+
+        csv_path = scratch / "bandstructure.csv"
+        if not csv_path.is_file():
+            raise FileNotFoundError(csv_path)
+        return csv_path
+
+    # ------------------------------------------------------------------
+    # helper methods
+    # ------------------------------------------------------------------
+    def _write_user_xml(
+        self,
+        material_name: str,
+        db_path: Union[str, Path],
+        out_path: Path,
+    ) -> None:
+        tree = ET.parse(self.base_user_xml)
+        root = tree.getroot()
+
+        mat_node = root.find("./material")
+        if mat_node is None:
+            raise ValueError("template missing <material> tag")
+        mat_node.text = material_name
+
+        db_node = root.find("./material_db_path")
+        if db_node is None:
+            raise ValueError("template missing <material_db_path> tag")
+        db_node.text = str(Path(db_path).resolve())
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        tree.write(out_path, encoding="utf-8", xml_declaration=True)
+
+    def _bash_wrapper(self, run_line: str) -> str:
+        """Return bash -lc command that exports env-vars, loads modules, then runs."""
+        #exports = " ; ".join([f"export {k}={v}" for k, v in self.env_vars.items()])
+        #module_line = "module load " + " ".join(self.modules)
+        return f'bash -lc "{run_line}"'
+        #return f'bash -lc "{exports} ; {module_line} ; {run_line}"'
+
+# src/user.py
+"""Parse command-line arguments for the band-structure simulation and fitting pipeline."""
+
+import argparse
+from pathlib import Path
+from typing import Optional
+
+
+class UserConfig:
+    """Encapsulates paths and optimisation hyperparameters provided by the user."""
+
+    def __init__(self) -> None:
+        parser = argparse.ArgumentParser(
+            description="Run tight-binding simulation, CMA-ES fit, and plot overlay",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        )
+
+        # Reference data: bandstructure CSV for comparison
+        parser.add_argument(
+            "--ref_csv", type=Path, required=True,
+            help="Path to reference bandstructure CSV"
+        )
+
+        # Output directory for plots, fit results, and scratch runs
+        parser.add_argument(
+            "--out_dir", type=Path, default=Path("results"),
+            help="Directory to write outputs (plots, params, scratch runs)"
+        )
+
+        # Material database: initial parameters
+        parser.add_argument(
+            "--materials_xml", type=Path,
+            default=Path("simulator/Jancu_Materials.xml"),
+            help="Path to the material DB XML file"
+        )
+
+        # User-input template for sdt
+        parser.add_argument(
+            "--user_input_xml", type=Path,
+            default=Path("simulator/user_input_tight_binding.xml"),
+            help="Path to the base user-input XML template"
+        )
+
+        # Solver executable
+        parser.add_argument(
+            "--solver_exe", type=Path,
+            default=Path("simulator/sdt"),
+            help="Path to the sdt tight-binding executable"
+        )
+
+        # CMA-ES hyperparameters
+        parser.add_argument(
+            "--popsize", type=int, default=16,
+            help="CMA-ES population size"
+        )
+        parser.add_argument(
+            "--max_iter", type=int, default=100,
+            help="Maximum CMA-ES generations"
+        )
+        parser.add_argument(
+            "--seed", type=int, default=0,
+            help="Random seed for reproducibility"
+        )
+
+        self.args = parser.parse_args()
+
+        # Create output directory if needed
+        self.args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def ref_csv(self) -> Path:
+        return self.args.ref_csv
+
+    @property
+    def out_dir(self) -> Path:
+        return self.args.out_dir
+
+    @property
+    def materials_xml(self) -> Path:
+        return self.args.materials_xml
+
+    @property
+    def user_input_xml(self) -> Path:
+        return self.args.user_input_xml
+
+    @property
+    def solver_exe(self) -> Path:
+        return self.args.solver_exe
+
+    # CMA-ES properties ---------------------------------------------------
+    @property
+    def popsize(self) -> int:
+        return self.args.popsize
+
+    @property
+    def max_iter(self) -> int:
+        return self.args.max_iter
+
+    @property
+    def seed(self) -> int:
+        return self.args.seed
+
+
+"""Plotting utilities for TriTBFit.
+
+Implements a `BandStructurePlot` class that overlays reference and fitted
+bands in a dark style. Call `.draw(Path)` to write a PNG, or `.draw()` to
+show interactively.
+"""
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+from matplotlib import pyplot as plt
+
+from src.data_loader import BandStructureData
+
+
+class BandStructurePlot:
+    """Overlay reference vs. fitted bands in a dark-style plot."""
+
+    def __init__(self, data: BandStructureData, fitted: np.ndarray) -> None:
+        self.data = data
+        self.fitted = fitted
+        plt.style.use("dark_background")
+        self.fig, self.ax = plt.subplots(figsize=(6, 3.5))
+
+    # ------------------------------------------------------------------
+    def draw(self, save_path: Optional[Path] = None) -> None:
+        """Render the overlay and optionally save it.
+
+        Parameters
+        ----------
+        save_path : Path or None
+            If provided, write the figure to this file; otherwise show.
+        """
+        x = self.data.kpath
+
+        # Reference bands – solid blue
+        for i, band in enumerate(self.data.energies.T):
+            self.ax.plot(x, band, "b-", lw=0.6, label="Reference" if i == 0 else None)
+
+        # Fitted bands – red dotted
+        for i, band in enumerate(self.fitted.T):
+            self.ax.plot(x, band, "r:", lw=0.6, label="Fitted" if i == 0 else None)
+
+        # High-symmetry ticks
+        hs_x, hs_lbl = self.data.high_symmetry_points()
+        self.ax.set_xticks(hs_x)
+        self.ax.set_xticklabels(hs_lbl)
+
+        self.ax.set_ylabel("Energy (eV)")
+        self.ax.set_title("Bandstructure: reference vs. fitted (Pass 1)")
+        self.ax.grid(True, color="gray", lw=0.3)
+        self.ax.legend()
+
+        if save_path is not None:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            self.fig.savefig(save_path, dpi=300, bbox_inches="tight")
+            print(f"[INFO] Plot saved to {save_path}")
+        else:
+            plt.show()
+
+# src/main.py
+"""Pass-1 CMA-ES fit of tight-binding parameters, then overlay plot."""
+
+import tempfile
+from pathlib import Path
+from typing import Dict, List
+
+import numpy as np
+from uuid import uuid4
+
+from src.user import UserConfig
+from src.param_handler import ParamHandler
+from src.sim_handler import SimHandler
+from src.data_loader import BandStructureData
+from src.visualizer import BandStructurePlot
+from src.full_dispersion_fitter import BandStructureFitter
+
+
+# ----------------------------------------------------------------------
+# 0.  FREE PARAMETER LIST  (modify as you like)
+# ----------------------------------------------------------------------
+FREE_TAGS: List[str] = [
+    # On-site energies
+    "E_s_a", "E_s_c", "E_p_a", "E_p_c", "E_d", "E_sstar",
+
+    # Two-centre integrals (sp3d5s*)
+    "ss_sigma",
+    "sstar_sstar_sigma",
+    "sa_star_sc_sigma", "sa_sc_star_sigma",
+    "sa_pc_sigma",      "sc_pa_sigma",
+    "sa_star_pc_sigma", "sc_star_pa_sigma",
+    "sa_dc_sigma",      "sc_da_sigma",
+    "sa_star_dc_sigma", "sc_star_da_sigma",
+    "pp_sigma", "pp_pi",
+    "pa_dc_sigma", "pc_da_sigma",
+    "pa_dc_pi",   "pc_da_pi",
+    "dd_sigma", "dd_pi", "dd_delta",
+
+    # Spin–orbit
+    "Delta_a_over_3", "Delta_c_over_3",
+]
+
+def vector_to_updates(vec: np.ndarray) -> Dict[str, float]:
+    """Convert 1-D vector -> {tag: value}.  Assumes len(vec)==len(FREE_TAGS)."""
+    return {tag: float(val) for tag, val in zip(FREE_TAGS, vec)}
+
+
+# ----------------------------------------------------------------------
+# 1.  Main routine
+# ----------------------------------------------------------------------
+def main() -> None:
+    # ---- CLI ---------------------------------------------------------
+    cfg = UserConfig()
+    out_dir = cfg.out_dir
+
+    # ---- Reference band structure -----------------------------------
+    ref_data = BandStructureData(cfg.ref_csv)
+
+    # ---- Base ParamHandler (template parameters) --------------------
+    base_ph = ParamHandler(cfg.materials_xml)
+    base_params = base_ph.get_params("Silicon")
+
+    # ---- Build TB solver wrapper ------------------------------------
+    def tb_solver(params: np.ndarray, _kpath: np.ndarray) -> np.ndarray:
+        """Black-box callable for CMA-ES."""
+        # 1. Build trial materials file in a temp dir
+        with tempfile.TemporaryDirectory(dir=out_dir) as tmp:
+            trial_xml = Path(tmp) / "mat.xml"
+            updates = vector_to_updates(params)
+
+            ph = ParamHandler(cfg.materials_xml)
+            ph.update_and_save("Silicon", updates, trial_xml, keep_only=True)
+
+            # 2. Run solver
+            sh = SimHandler(
+                solver_exe=cfg.solver_exe,
+                base_user_xml=cfg.user_input_xml,
+                save_root=tmp,
+            )
+            csv_path = sh.run("Silicon", trial_xml)
+
+            # 3. Load energies and return
+            sim_data = BandStructureData(csv_path)
+            return sim_data.energies
+
+    # ---- Initial parameter vector (uniform 0..5 eV) ------------------
+    rng = np.random.default_rng(cfg.seed)
+    init_vec = rng.uniform(0.0, 5.0, size=len(FREE_TAGS))
+
+    # ---- Run CMA-ES fit ---------------------------------------------
+    fitter = BandStructureFitter(
+        data=ref_data,
+        tb_solver=tb_solver,
+        init_params=init_vec,
+        cfg=cfg,
+    )
+    best_vec = fitter.fit()
+
+    print("[main] Best parameters:", best_vec)
+
+    # ---- Final evaluation & overlay plot ----------------------------
+    # Write a permanent XML with best parameters
+    best_xml = out_dir / "materials_best.xml"
+    best_updates = vector_to_updates(best_vec)
+    base_ph.update_and_save("Silicon", best_updates, best_xml, keep_only=True)
+
+    # Run solver once more to get final CSV
+    sh_final = SimHandler(
+        solver_exe=cfg.solver_exe,
+        base_user_xml=cfg.user_input_xml,
+        save_root=out_dir,
+    )
+    final_csv = sh_final.run("Silicon", best_xml)
+    final_data = BandStructureData(final_csv)
+
+    # Plot overlay: reference vs fitted
+    plotter = BandStructurePlot(ref_data, final_data.energies)
+    plot_path = out_dir / "overlay_best_fit.png"
+    plotter.draw(plot_path)
+    print(f"[main] Overlay plot saved to {plot_path}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+these are all different files (if you see import then a new file has been found)
+
+so tell me clearly how i go about next implimenting this new method and explain mathematically how it works?
+
+maybe CMA-ES is a first run and then the least squares second run? what do you think
+
+(just simhandler file all above is quote)

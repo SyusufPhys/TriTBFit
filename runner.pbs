@@ -1,0 +1,63 @@
+#!/bin/bash
+#PBS -P ad73
+#PBS -N tbfit
+#PBS -q express
+#PBS -l ncpus=32 
+#PBS -l mem=48GB
+#PBS -l jobfs=5GB
+#PBS -l walltime=04:00:00
+#PBS -l storage=gdata/ad73+scratch/ad73
+#PBS -o runner.out
+#PBS -e runner.err
+#PBS -l wd
+
+# 0️⃣  Ensure we start in the submission directory
+cd $PBS_O_WORKDIR
+
+# 1️⃣  Toolchain & math libraries
+module purge
+module load intel-compiler/2020.0.166
+module load intel-mkl/2020.0.166
+
+# 2️⃣  MPI (for any MPI-enabled builds/tests)
+module load openmpi/4.1.7
+
+# 3️⃣  Build utilities & headers
+module load cmake
+module load gsl
+module load eigen/3.3.7
+
+# 4️⃣  Python (after compiler & MPI)
+module load python3/3.10.0
+
+# 5️⃣  (Optional) Show exactly what modules are active
+echo "=== Loaded modules ==="
+module list
+echo
+
+# 6️⃣  Environment vars for SLEPc/PETSc/Trilinos
+export SLEPC_DIR=/g/data/ad73/sy1090/AngusTB/libraries/slepc-install
+export PETSC_DIR=/g/data/ad73/sy1090/AngusTB/libraries/petsc-3.18.4
+export PETSC_ARCH=arch-linux-c-debug
+export TRILINOS_DIR=/g/data/ad73/sy1090/AngusTB/libraries/trilinos-install
+
+# 7️⃣  Activate your virtualenv
+source /g/data/ad73/sy1090/TriTbFit/myvenv/bin/activate
+
+# 8️⃣  Sanity check: Python version & installed packages
+echo "=== Python version ==="
+python --version
+echo
+echo "=== Pip packages ==="
+pip list --format=columns
+echo
+
+# 9️⃣  Run your script
+python main.py \
+  --ref_csv data/1000_Silicon-Bandstructure-Jancu-Generated-Version-1.csv \
+  --out_dir results \
+  --materials_xml simulator/Jancu_Materials.xml \
+  --user_input_xml simulator/user_input_tight_binding.xml \
+  --solver_exe simulator/sdt
+
+  

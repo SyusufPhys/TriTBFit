@@ -1,0 +1,39 @@
+# 1️⃣  Toolchain & math libraries
+module load intel-compiler/2020.0.166   # provides icc/icpc/ifort
+module load intel-mkl/2020.0.166        # BLAS/LAPACK used by PETSc & SLEPc
+
+# 2️⃣  MPI that matches your mpi4py build
+module load openmpi/4.1.7               # gives mpicc, mpirun
+
+# 3️⃣  Auxiliary build utilities
+module load cmake
+module load gsl
+module load eigen/3.3.7                 # header-only, but keep versions consistent
+
+# 4️⃣  Python *after* compiler & MPI so pip sees the right headers/libraries
+module load python3/3.10.0              # plain Python; mpi4py comes from your venv
+
+# ── optional: confirm modules
+module list
+
+# 5️⃣  Environment variables for external libs used by `sdt`
+export SLEPC_DIR=/g/data/ad73/sy1090/AngusTB/libraries/slepc-install
+export PETSC_DIR=/g/data/ad73/sy1090/AngusTB/libraries/petsc-3.18.4
+export PETSC_ARCH=arch-linux-c-debug
+export TRILINOS_DIR=/g/data/ad73/sy1090/AngusTB/libraries/trilinos-install
+
+# 6️⃣  Activate (or create) your virtualenv
+source /g/data/ad73/sy1090/TriTbFit/myvenv/bin/activate
+
+# 7️⃣  (One-time) install Python deps inside the venv
+# export MPICC so mpi4py builds against the openmpi module
+export MPICC=mpicc
+pip install --no-build-isolation -r requirements.txt
+
+# 8️⃣  Launch your MPI job
+/g/data/ad73/sy1090/TriTbFit/myvenv/bin/python main.py \
+  --ref_csv data/100_Silicon-Bandstructure-Jancu-Generated-Version-1.csv \
+  --out_dir results \
+  --materials_xml simulator/Jancu_Materials.xml \
+  --user_input_xml simulator/user_input_tight_binding.xml \
+  --solver_exe simulator/sdt
