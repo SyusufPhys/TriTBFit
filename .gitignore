@@ -1,0 +1,22 @@
+# Ignore data directory
+data/
+
+# Ignore virtual environment
+myvenv/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# macOS artifact
+.DS_Store
+
+# Visual Studio Code settings
+.vscode/
+
+#Simulator Ignore
+./simulator
